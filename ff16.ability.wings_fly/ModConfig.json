@@ -2,7 +2,7 @@
     "ModId": "ff16.ability.wings_fly",
     "ModName": "Wings Of Light Flying",
     "ModAuthor": "Recoome",
-    "ModVersion": "1.0.0",
+    "ModVersion": "1.0.1",
     "ModDescription": "Adds actual flight to wings of light",
     "ModDll": "ff16.ability.wings_fly.dll",
     "ModR2RManagedDll32": "x86/ff16.ability.wings_fly.dll",
