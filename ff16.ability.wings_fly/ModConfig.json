@@ -2,7 +2,7 @@
     "ModId": "ff16.ability.wings_fly",
     "ModName": "Wings Of Light Flying",
     "ModAuthor": "Recoome",
-    "ModVersion": "1.0.1",
+    "ModVersion": "1.0.2",
     "ModDescription": "Adds actual flight to wings of light",
     "ModDll": "ff16.ability.wings_fly.dll",
     "ModR2RManagedDll32": "x86/ff16.ability.wings_fly.dll",
@@ -61,11 +61,20 @@
                         "AssetFileName": "Mod.zip"
                     },
                     "ReleaseMetadataName": "SharedScans.Reloaded.ReleaseMetadata.json"
+                },
+                "ff16.gameplay.unlimitedairactions": {
+                    "Config": {
+                        "UserName": "Ronserruya",
+                        "RepositoryName": "ff16.gameplay.unlimitedairactions",
+                        "UseReleaseTag": true,
+                        "AssetFileName": "Mod.zip"
+                    },
+                    "ReleaseMetadataName": "ff16.gameplay.unlimitedairactions.ReleaseMetadata.json.br"
                 }
             }
         },
         "GitHubRelease": {
-            "UserName": "RonSerruya",
+            "UserName": "Ronserruya",
             "RepositoryName": "ff16.ability.wings_fly",
             "UseReleaseTag": true,
             "AssetFileName": "Mod.zip"
@@ -76,7 +85,8 @@
         "ff16.utility.framework",
         "ff16.utility.modloader",
         "Reloaded.Memory.SigScan.ReloadedII",
-        "reloaded.sharedlib.hooks"
+        "reloaded.sharedlib.hooks",
+        "ff16.gameplay.unlimitedairactions"
     ],
     "OptionalDependencies": [],
     "SupportedAppId": [

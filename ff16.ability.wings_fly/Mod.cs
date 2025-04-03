@@ -8,6 +8,14 @@ using IReloadedHooks = Reloaded.Hooks.ReloadedII.Interfaces.IReloadedHooks;
 using FF16Tools.Files.Nex;
 using FF16Tools.Files.Nex.Entities;
 using FF16Framework.Interfaces.Nex;
+using SharpDX.XInput;
+using DualSenseAPI;
+using GlobalKeyInterceptor;
+using Reloaded.Memory.Interfaces;
+using SharpDX.Mathematics.Interop;
+using System.Data.Common;
+using System.Text;
+using FF16Framework.Interfaces.Nex.Structures;
 
 namespace ff16.ability.wings_fly;
 
@@ -47,12 +55,29 @@ public class Mod : ModBase // <= Do not Remove.
     /// </summary>
     private readonly IModConfig _modConfig;
 
+    private INexRow _wingsPlayerCommandBuilder;
+    private INexRow _commandAttackRow;
+    private NexTableLayout _playerCommandLayout = TableMappingReader.ReadTableLayout("playercommandbuilder", new Version(1, 0, 3));
+    private NexTableLayout _summonLayout = TableMappingReader.ReadTableLayout("summonmode", new Version(1, 0, 3));
+    private NexTableLayout _cmdLayout = TableMappingReader.ReadTableLayout("command", new Version(1, 0, 3));
+    private nint _bahaMagicStrPtr;
+    private nint _atkStrPtr;
+
+
+    private Controller _controller = new Controller(UserIndex.One);
+
     private enum SystemMoveKey : uint
     {
         Fly = 9011,
         Fall = 9012,
         Dodge = 1001,
         PreciseDodge = 9013
+    }
+
+    private enum CommandKey : uint
+    {
+        Ascend = 9001,
+        Descend = 9002
     }
 
     private enum CharaTimelineKey : uint
@@ -70,8 +95,15 @@ public class Mod : ModBase // <= Do not Remove.
         WingsPreciseDodge = 812
     }
 
+    private byte[] AscendBytes = Encoding.UTF8.GetBytes("Ascend\0");
+    private byte[] originalBytes;
+    private int _atkStrOffset;
+    private int _newDescStrOffset;
+    private bool _renameAirActions = false;
+
 
     public WeakReference<INextExcelDBApiManaged> _managedNexApi;
+    public WeakReference<INextExcelDBApi> _rawNexApi;
 
     public Mod(ModContext context)
     {
@@ -89,6 +121,7 @@ public class Mod : ModBase // <= Do not Remove.
         _logger.WriteLine($"[{_modConfig.ModId}] Initializing...", _logger.ColorGreen);
 
         _managedNexApi = _modLoader.GetController<INextExcelDBApiManaged>();
+        _rawNexApi = _modLoader.GetController<INextExcelDBApi>();
         if (!_managedNexApi.TryGetTarget(out INextExcelDBApiManaged managedNextExcelDBApi))
         {
             _logger.WriteLine($"[{_modConfig.ModId}] Could not get INextExcelDBApi. Is the FFXVI Mod Framework installed/loaded?");
@@ -106,11 +139,230 @@ public class Mod : ModBase // <= Do not Remove.
     private unsafe void NextExcelDBApi_OnNexLoaded()
     {
         ApplyFlyingParam();
+        SetRowsAndPtrs();
+        CreateInputTasks();
     }
 
-    private unsafe void ApplyFlyingParam() {
+    private unsafe void EnableFlightMode()
+    {
+        if (_renameAirActions)
+        {
+            Reloaded.Memory.Memory.Instance.WriteRaw((nuint)_bahaMagicStrPtr, AscendBytes);
+            _commandAttackRow.SetInt32((uint)_cmdLayout.Columns["Name"].Offset, _newDescStrOffset);
+        }
+
+        _wingsPlayerCommandBuilder.SetInt32((uint)_playerCommandLayout.Columns["Unk4"].Offset, (int)CommandKey.Descend);
+        _wingsPlayerCommandBuilder.SetInt32((uint)_playerCommandLayout.Columns["TriangleCommandId"].Offset, (int)CommandKey.Ascend);
+    }
+    private unsafe void DisableFlightMode()
+    {
+        if (_renameAirActions)
+        {
+            Reloaded.Memory.Memory.Instance.WriteRaw((nuint)_bahaMagicStrPtr, originalBytes);
+            _commandAttackRow.SetInt32((uint)_cmdLayout.Columns["Name"].Offset, _atkStrOffset);
+        }
+
+        _wingsPlayerCommandBuilder.SetInt32((uint)_playerCommandLayout.Columns["Unk4"].Offset, 0);
+        _wingsPlayerCommandBuilder.SetInt32((uint)_playerCommandLayout.Columns["TriangleCommandId"].Offset, 0);
+    }
+
+    private unsafe void SetRowsAndPtrs()
+    {
+        _managedNexApi.TryGetTarget(out var nextExcelDBApi);
+        INexTable? table = nextExcelDBApi!.GetTable(NexTableIds.playercommandbuilder);
+
+        _wingsPlayerCommandBuilder = table.GetRow(23);
+
+        _commandAttackRow = nextExcelDBApi!.GetTable(NexTableIds.command).GetRow(1);
+
+        INexTable? summonTable = nextExcelDBApi!.GetTable(NexTableIds.summonmode);
+
+
+        // Get original magic + chanrged Magic bytes to re-write after disabling flight mode
+        var _bahamutSummonRow = summonTable.GetRow(8);
+        var orgMagic = _bahamutSummonRow.GetString((uint)_summonLayout.Columns["MagicName"].Offset, relative: true, relativeOffset: 0);
+        var orgChargedMagic = _bahamutSummonRow.GetString((uint)_summonLayout.Columns["ChargedMagicName"].Offset, relative: true, relativeOffset: -4);
+        originalBytes = Encoding.UTF8.GetBytes(orgMagic + "\0").Concat(Encoding.UTF8.GetBytes(orgChargedMagic + "\0")).ToArray();
+
+        // Should always be true, but just making sure
+        if (originalBytes.Length > AscendBytes.Length)
+        {
+            _renameAirActions = true;
+        }
+
+        _rawNexApi.TryGetTarget(out var rawDBApi);
+
+        NexTableInstance* rawTable = rawDBApi!.GetTable(NexTableIds.summonmode);
+
+        var bahaRow = rawDBApi.SearchRow(rawTable, 8);
+        var _bahaRowDataPtr = rawDBApi.GetRowData(bahaRow);
+
+        int strOffset = *(int*)(_bahaRowDataPtr + _summonLayout.Columns["MagicName"].Offset);
+        _bahaMagicStrPtr = (nint)(_bahaRowDataPtr + strOffset + _summonLayout.Columns["MagicName"].Offset);
+
+        // Calculate a new str offset to write into the atk Row to direct it to the "Descned" row
+        NexTableInstance* cmdTable = rawDBApi!.GetTable(NexTableIds.command);
+
+        var atkRow = rawDBApi.SearchRow(cmdTable, 1);
+        var atkRowDataPtr = rawDBApi.GetRowData(atkRow);
+        _atkStrOffset = *(int*)(atkRowDataPtr + _cmdLayout.Columns["Name"].Offset);
+        nint atkStrPtr = (nint)(atkRowDataPtr + _atkStrOffset + _cmdLayout.Columns["Name"].Offset);
+
+        var descRow = rawDBApi.SearchRow(cmdTable, 21);
+        var descRowDataPtr = rawDBApi.GetRowData(descRow);
+        int descStrOffset = *(int*)(descRowDataPtr + _cmdLayout.Columns["Name"].Offset);
+        nint descStrPtr = (nint)(descRowDataPtr + descStrOffset + _cmdLayout.Columns["Name"].Offset);
+
+        var diff = (int)(descStrPtr - atkStrPtr);
+        _newDescStrOffset = _atkStrOffset + diff;
+
+        // Should always be false, but just making sure
+        if (descStrPtr < atkStrPtr)
+            _renameAirActions = false;
+
+    }
+
+    private unsafe void CreateInputTasks()
+    {
+        // Create the tasks that handle the "flight mode" input
+
+        // Always monitor keyboard
+        Task.Run(KeyboardInputThread);
+
+        // Monitor either xInput or Dualsense, or both of them if its not clear
+        if (_controller.IsConnected)
+        {
+            Task.Run(ControllerInputThread);
+        }
+        else if (DualSense.EnumerateControllers().Any())
+        {
+            Task.Run(DualSenseInputThread);
+        }
+        else
+        {
+            Task.Run(ControllerInputThread);
+            Task.Run(DualSenseInputThread);
+        }
+    }
+
+    private void KeyboardInputThread()
+    {
+        Shortcut[] shortcuts = {
+            new(Key.LeftAlt, state: KeyState.Down, name: "AltPressed"),
+            new(Key.LeftAlt, state: KeyState.Up, name: "AltUp")
+        };
+
+        var interceptor = new KeyInterceptor(shortcuts);
+        bool altDown = false;
+
+        interceptor.ShortcutPressed += (_, e) =>
+        {
+            switch (e.Shortcut.Name)
+            {
+                case "AltPressed":
+                    if (!altDown)
+                    {
+                        altDown = true;
+                        EnableFlightMode();
+                    }
+                    break;
+                case "AltUp":
+                    if (altDown)
+                    {
+                        altDown = false;
+                        DisableFlightMode();
+                    }
+                    break;
+            }
+        };
+
+        interceptor.RunMessageLoop();
+    }
+
+    private void DualSenseInputThread()
+    {
+        DualSense? dualSense = null;
+        bool prevL3 = false;
+        bool currentL3 = false;
+
+        while (true)
+        {
+            if (DualSense.EnumerateControllers().Any())
+            {
+                _logger.WriteLine($"[{_modConfig.ModId}] DualSense detected.");
+
+                dualSense = DualSense.EnumerateControllers().First();
+
+                dualSense.Acquire();
+
+                try
+                {
+                    while (true)
+                    {
+                        currentL3 = dualSense.ReadWriteOnce().L3Button;
+                        if (currentL3 && !prevL3)
+                        {
+                            prevL3 = currentL3;
+                            EnableFlightMode();
+                        }
+                        else if (!currentL3 && prevL3)
+                        {
+                            prevL3 = currentL3;
+                            DisableFlightMode();
+                        }
+
+                        Thread.Sleep(20);
+                    }
+                }
+                catch (Exception e)
+                {
+                    DisableFlightMode();
+                    dualSense.Release();
+                }
+            }
+            else
+            {
+                Thread.Sleep(1000);
+            }
+        }
+    }
+
+    private void ControllerInputThread()
+    {
+        GamepadButtonFlags l3 = GamepadButtonFlags.LeftThumb;
+        GamepadButtonFlags previousButtons = 0;
+
+        while (true)
+        {
+            if (_controller.IsConnected)
+            {
+                var state = _controller.GetState();
+                GamepadButtonFlags currentButtons = state.Gamepad.Buttons;
+
+                if ((currentButtons & l3) != 0 && (previousButtons & l3) == 0)
+                {
+                    EnableFlightMode();
+                }
+                else if ((currentButtons & l3) == 0 && (previousButtons & l3) != 0)
+                {
+                    DisableFlightMode();
+                }
+
+                previousButtons = currentButtons;
+                Thread.Sleep(20);
+            }
+            else
+            {
+                Thread.Sleep(1000);
+            }
+        }
+    }
+
+    private unsafe void ApplyFlyingParam()
+    {
+#pragma warning disable CS8600, CS8602
         _logger.WriteLine($"[{_modConfig.ModId}] Applying Wings of Light flying parameters...", _logger.ColorGreen);
-        
+
         _managedNexApi.TryGetTarget(out var nextExcelDBApi);
 
         INexTable actionTable = nextExcelDBApi.GetTable(Enum.Parse<NexTableIds>("action"));
@@ -119,11 +371,11 @@ public class Mod : ModBase // <= Do not Remove.
         INexTable systemMoveTable = nextExcelDBApi.GetTable(Enum.Parse<NexTableIds>("systemmove"));
         NexTableLayout systemMoveLayout = TableMappingReader.ReadTableLayout("systemmove", new Version(1, 0, 3));
 
-        INexRow WingsRow = actionTable.GetRow(((uint)ActionKey.Wings));
-        INexRow WingsAirborneRow = actionTable.GetRow(((uint)ActionKey.WingsAirborne));
-        INexRow WingsCancelRow = actionTable.GetRow(((uint)ActionKey.WingsCancel));
-        INexRow WingsDodgeRow = actionTable.GetRow(((uint)ActionKey.WingsDodge));
-        INexRow WingsPreciseDodgeRow = actionTable.GetRow(((uint)ActionKey.WingsPreciseDodge));
+        INexRow WingsRow = actionTable.GetRow((uint)ActionKey.Wings);
+        INexRow WingsAirborneRow = actionTable.GetRow((uint)ActionKey.WingsAirborne);
+        INexRow WingsCancelRow = actionTable.GetRow((uint)ActionKey.WingsCancel);
+        INexRow WingsDodgeRow = actionTable.GetRow((uint)ActionKey.WingsDodge);
+        INexRow WingsPreciseDodgeRow = actionTable.GetRow((uint)ActionKey.WingsPreciseDodge);
 
         INexRow FlyRow = systemMoveTable.GetRow((uint)SystemMoveKey.Fly);
         INexRow FallRow = systemMoveTable.GetRow((uint)SystemMoveKey.Fall);
