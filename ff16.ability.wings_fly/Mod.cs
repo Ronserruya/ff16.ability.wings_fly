@@ -371,6 +371,18 @@ public class Mod : ModBase // <= Do not Remove.
         INexTable systemMoveTable = nextExcelDBApi.GetTable(Enum.Parse<NexTableIds>("systemmove"));
         NexTableLayout systemMoveLayout = TableMappingReader.ReadTableLayout("systemmove", new Version(1, 0, 3));
 
+        // Wait for the nex table to be loaded since the framework can fire the event too early.
+        var counter = 0;
+        while (actionTable.GetRow((uint)ActionKey.Wings) == null || systemMoveTable.GetRow((uint)SystemMoveKey.Fly) == null)
+        {
+            Thread.Sleep(100);
+            counter++;
+            if (counter > 20)
+            {
+                throw new Exception($"[{_modConfig.ModId}] Failed initialization due to nex loading timeout!");
+            }
+        }
+
         INexRow WingsRow = actionTable.GetRow((uint)ActionKey.Wings);
         INexRow WingsAirborneRow = actionTable.GetRow((uint)ActionKey.WingsAirborne);
         INexRow WingsCancelRow = actionTable.GetRow((uint)ActionKey.WingsCancel);
